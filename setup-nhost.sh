@@ -21,6 +21,7 @@ GRAPHQL_ADMIN_SECRET=""
 JWT_SECRET=""
 STORAGE_ACCESS_KEY=""
 STORAGE_SECRET_KEY=""
+RUNNING_AS_ROOT=false
 
 # Print colored output
 print_status() {
@@ -42,8 +43,17 @@ print_error() {
 # Check if running as root
 check_root() {
     if [[ $EUID -eq 0 ]]; then
-        print_error "This script should not be run as root"
-        exit 1
+        print_warning "Running as root detected"
+        print_warning "This script can run as root, but it's generally safer to run as a regular user"
+        read -p "Do you want to continue as root? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            print_error "Setup cancelled"
+            exit 1
+        fi
+        RUNNING_AS_ROOT=true
+    else
+        RUNNING_AS_ROOT=false
     fi
 }
 
@@ -102,20 +112,33 @@ check_prerequisites() {
     # Check if Git is installed
     if ! command -v git &> /dev/null; then
         print_status "Installing Git..."
-        sudo apt update
-        sudo apt install -y git
+        if [[ $RUNNING_AS_ROOT == true ]]; then
+            apt update
+            apt install -y git
+        else
+            sudo apt update
+            sudo apt install -y git
+        fi
     fi
     
     # Check if curl is installed
     if ! command -v curl &> /dev/null; then
         print_status "Installing curl..."
-        sudo apt install -y curl
+        if [[ $RUNNING_AS_ROOT == true ]]; then
+            apt install -y curl
+        else
+            sudo apt install -y curl
+        fi
     fi
     
     # Check if openssl is installed
     if ! command -v openssl &> /dev/null; then
         print_status "Installing openssl..."
-        sudo apt install -y openssl
+        if [[ $RUNNING_AS_ROOT == true ]]; then
+            apt install -y openssl
+        else
+            sudo apt install -y openssl
+        fi
     fi
     
     print_success "Prerequisites checked"
@@ -131,34 +154,60 @@ install_docker() {
     print_status "Installing Docker..."
     
     # Remove old versions
-    sudo apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
-    
-    # Install dependencies
-    sudo apt-get update
-    sudo apt-get install -y \
-        ca-certificates \
-        curl \
-        gnupg \
-        lsb-release
-    
-    # Add Docker's official GPG key
-    sudo mkdir -p /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-    
-    # Set up repository
-    echo \
-        "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-        $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-    
-    # Install Docker Engine
-    sudo apt-get update
-    sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-    
-    # Add current user to docker group
-    sudo usermod -aG docker $USER
+    if [[ $RUNNING_AS_ROOT == true ]]; then
+        apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
+        
+        # Install dependencies
+        apt-get update
+        apt-get install -y \
+            ca-certificates \
+            curl \
+            gnupg \
+            lsb-release
+        
+        # Add Docker's official GPG key
+        mkdir -p /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+        
+        # Set up repository
+        echo \
+            "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+            $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+        
+        # Install Docker Engine
+        apt-get update
+        apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+    else
+        sudo apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
+        
+        # Install dependencies
+        sudo apt-get update
+        sudo apt-get install -y \
+            ca-certificates \
+            curl \
+            gnupg \
+            lsb-release
+        
+        # Add Docker's official GPG key
+        sudo mkdir -p /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+        
+        # Set up repository
+        echo \
+            "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+            $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+        
+        # Install Docker Engine
+        sudo apt-get update
+        sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+        
+        # Add current user to docker group
+        sudo usermod -aG docker $USER
+        
+        print_warning "You may need to log out and back in for Docker group changes to take effect"
+    fi
     
     print_success "Docker installed successfully"
-    print_warning "You may need to log out and back in for Docker group changes to take effect"
 }
 
 # Setup Nhost project
