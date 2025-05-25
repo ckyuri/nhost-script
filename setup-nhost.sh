@@ -439,7 +439,7 @@ services:
             traefik.http.services.functions.loadbalancer.server.port: "3000"
         restart: always
         volumes:
-            - ./functions:/opt/project/functions:ro
+            - ./functions:/opt/project/functions
             - functions_node_modules:/opt/project/functions/node_modules
 
     dashboard:
@@ -490,9 +490,13 @@ services:
 
 volumes:
     pgdata:
+        driver: local
     minio_data:
+        driver: local
     mailhog_data:
+        driver: local
     functions_node_modules:
+        driver: local
 EOF
     
     print_success "Production Docker Compose configuration created"
@@ -528,10 +532,12 @@ setup_directories() {
     
     # Create Let's Encrypt directory
     mkdir -p letsencrypt
+    chmod 755 letsencrypt
     
     # Create initdb directory if it doesn't exist
     if [[ ! -d "initdb.d" ]]; then
         mkdir -p initdb.d
+        chmod 755 initdb.d
         cat > initdb.d/0001-create-schema.sql << 'EOF'
 -- auth schema
 CREATE SCHEMA IF NOT EXISTS auth;
@@ -539,24 +545,57 @@ CREATE SCHEMA IF NOT EXISTS storage;
 -- https://github.com/hasura/graphql-engine/issues/3657
 CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
 CREATE EXTENSION IF NOT EXISTS citext WITH SCHEMA public;
-CREATE OR REPLACE FUNCTION public.set_current_timestamp_updated_at() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION public.set_current_timestamp_updated_at() RETURNS trigger LANGUAGE plpgsql AS $
 declare _new record;
 begin _new := new;
 _new."updated_at" = now();
 return _new;
 end;
-$$;
+$;
 EOF
+        chmod 644 initdb.d/0001-create-schema.sql
     fi
     
-    # Create functions directory with sample function
+    # Create functions directory with proper structure
     if [[ ! -d "functions" ]]; then
         mkdir -p functions
+        chmod 755 functions
+        
+        # Create sample function
         cat > functions/hello.js << 'EOF'
 export default (req, res) => {
   res.status(200).send(`Hello, ${req.query.name || 'World'}!`)
 }
 EOF
+        
+        # Create package.json for functions
+        cat > functions/package.json << 'EOF'
+{
+  "name": "nhost-functions",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {}
+}
+EOF
+        
+        # Create echo function (for testing)
+        cat > functions/echo.js << 'EOF'
+export default (req, res) => {
+  res.status(200).json({
+    method: req.method,
+    headers: req.headers,
+    query: req.query,
+    body: req.body
+  })
+}
+EOF
+        
+        chmod -R 755 functions
+    fi
+    
+    # Ensure proper ownership if running as root
+    if [[ $RUNNING_AS_ROOT == true ]]; then
+        chown -R root:root . 2>/dev/null || true
     fi
     
     print_success "Directories and files set up"
@@ -564,12 +603,35 @@ EOF
 
 # Start services
 start_services() {
+    print_status "Cleaning up any previous Docker resources..."
+    
+    # Stop any existing services
+    docker compose -f docker-compose.prod.yaml down 2>/dev/null || true
+    
+    # Remove problematic volumes from previous runs
+    docker volume rm docker-compose_functions_node_modules 2>/dev/null || true
+    
+    # Clean up orphaned containers and networks
+    docker system prune -f 2>/dev/null || true
+    
     print_status "Starting Nhost services..."
     
-    # Start services
-    docker compose -f docker-compose.prod.yaml up -d
-    
-    print_success "Services started successfully!"
+    # Start services with proper error handling
+    if docker compose -f docker-compose.prod.yaml up -d; then
+        print_success "Services started successfully!"
+        
+        # Wait a moment for services to initialize
+        sleep 10
+        
+        # Check service health
+        print_status "Checking service health..."
+        docker compose -f docker-compose.prod.yaml ps
+        
+    else
+        print_error "Failed to start services. Checking logs..."
+        docker compose -f docker-compose.prod.yaml logs --tail=50
+        exit 1
+    fi
     
     echo
     print_success "=== Setup Complete! ==="
@@ -591,9 +653,13 @@ start_services() {
     echo "  2. Configure your SMTP settings in production"
     echo "  3. Remove Mailhog in production environments"
     echo "  4. Set up regular database backups"
+    echo "  5. SSL certificates may take a few minutes to generate"
     echo
-    print_status "Logs: docker compose -f docker-compose.prod.yaml logs -f"
-    print_status "Stop:  docker compose -f docker-compose.prod.yaml down"
+    print_status "Useful commands:"
+    echo "  Check status: docker compose -f docker-compose.prod.yaml ps"
+    echo "  View logs:    docker compose -f docker-compose.prod.yaml logs -f"
+    echo "  Stop:         docker compose -f docker-compose.prod.yaml down"
+    echo "  Restart:      docker compose -f docker-compose.prod.yaml restart"
 }
 
 # Save configuration
